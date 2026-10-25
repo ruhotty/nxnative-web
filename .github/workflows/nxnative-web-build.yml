@@ -1,0 +1,133 @@
+name: NXNative Web build
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Upload job ID
+        required: true
+        type: string
+      manifest_key:
+        description: R2 manifest object key
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nxnative-web-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # GitHub-hosted macOS runners have limited disk space. Larger games can fail.
+    runs-on: macos-14
+    timeout-minutes: 360
+    env:
+      JOB_ID: ${{ inputs.job_id }}
+      MANIFEST_KEY: ${{ inputs.manifest_key }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+    steps:
+      - name: Validate request and configure tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$JOB_ID" =~ ^[0-9a-f-]{36}$ ]]
+          [[ "$MANIFEST_KEY" == "jobs/$JOB_ID/manifest.json" ]]
+          test -n "$R2_ACCOUNT_ID"
+          test -n "$R2_BUCKET"
+          test -n "$AWS_ACCESS_KEY_ID"
+          test -n "$AWS_SECRET_ACCESS_KEY"
+          echo "Runner disk space:"
+          df -h /
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install xcodegen zstd spirv-cross glslang
+          brew install --cask dotnet-sdk
+          python3 -m venv "$RUNNER_TEMP/nxnative-venv"
+          "$RUNNER_TEMP/nxnative-venv/bin/pip" install lz4 capstone fonttools "backports.zstd; python_version < '3.14'" nsz
+      - name: Download private input files
+        shell: bash
+        run: |
+          set -euo pipefail
+          export R2_ENDPOINT="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+          mkdir -p "$RUNNER_TEMP/nxnative-input" "$RUNNER_TEMP/nxnative-keys"
+          aws --endpoint-url "$R2_ENDPOINT" s3 cp "s3://$R2_BUCKET/$MANIFEST_KEY" "$RUNNER_TEMP/manifest.json"
+          python3 - "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/file-map.tsv" <<'PY'
+          import json, pathlib, re, sys
+          data = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if not re.fullmatch(r"[0-9a-f-]{36}", data.get("jobId", "")):
+              raise SystemExit("Invalid manifest job ID")
+          out = pathlib.Path(sys.argv[2])
+          with out.open("w") as f:
+              for item in data.get("files", []):
+                  name = item.get("name", "")
+                  key = item.get("key", "")
+                  if not re.fullmatch(r"[A-Za-z0-9._ -]{1,180}", name) or name.startswith("."):
+                      raise SystemExit("Invalid filename in manifest")
+                  if key != "jobs/" + data["jobId"] + "/input/" + name:
+                      raise SystemExit("Invalid object key in manifest")
+                  if item.get("kind") not in ("keys", "game"):
+                      raise SystemExit("Invalid file kind")
+                  f.write(item["kind"] + "\t" + name + "\t" + key + "\n")
+          PY
+          while IFS=$'\t' read -r kind name key; do
+            [ -n "$name" ] || continue
+            if [ "$kind" = "keys" ]; then
+              destination="$RUNNER_TEMP/nxnative-keys/prod.keys"
+            else
+              destination="$RUNNER_TEMP/nxnative-input/$name"
+            fi
+            aws --endpoint-url "$R2_ENDPOINT" s3 cp "s3://$R2_BUCKET/$key" "$destination" --only-show-errors
+          done < "$RUNNER_TEMP/file-map.tsv"
+          test -s "$RUNNER_TEMP/nxnative-keys/prod.keys"
+          find "$RUNNER_TEMP/nxnative-input" -type f | grep -Eq '\.(nsp|xci|nsz|xcz)$'
+          echo "Downloaded inputs. Keys are not printed."
+      - name: Build IPA using upstream NXNative script
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          "$RUNNER_TEMP/nxnative-venv/bin/python" scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input" -k "$RUNNER_TEMP/nxnative-keys/prod.keys"
+          IPA="$(find "$RUNNER_TEMP/nxnative-input" -maxdepth 2 -type f -name '*.ipa' -print -quit)"
+          test -n "$IPA"
+          echo "ipa_path=$IPA" >> "$GITHUB_OUTPUT"
+      - name: Upload IPA to private R2 storage
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          export R2_ENDPOINT="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+          IPA_PATH="${{ steps.build.outputs.ipa_path }}"
+          OUTPUT_KEY="jobs/$JOB_ID/output/$(basename "$IPA_PATH")"
+          aws --endpoint-url "$R2_ENDPOINT" s3 cp "$IPA_PATH" "s3://$R2_BUCKET/$OUTPUT_KEY" --only-show-errors
+          python3 - "$RUNNER_TEMP/status.json" "$OUTPUT_KEY" <<'PY'
+          import json, pathlib, sys, datetime
+          pathlib.Path(sys.argv[1]).write_text(json.dumps({"status":"succeeded","message":"Build completed. The IPA download link expires after one hour.","outputKey":sys.argv[2],"updatedAt":datetime.datetime.now(datetime.timezone.utc).isoformat()}))
+          PY
+          aws --endpoint-url "$R2_ENDPOINT" s3 cp "$RUNNER_TEMP/status.json" "s3://$R2_BUCKET/jobs/$JOB_ID/status.json" --content-type application/json --only-show-errors
+      - name: Record failure status
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          export R2_ENDPOINT="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+          python3 - "$RUNNER_TEMP/status.json" <<'PY'
+          import json, pathlib, sys, datetime
+          pathlib.Path(sys.argv[1]).write_text(json.dumps({"status":"failed","message":"Build failed. Open the matching GitHub Actions run for details. Never share logs containing private paths or secrets.","updatedAt":datetime.datetime.now(datetime.timezone.utc).isoformat()}))
+          PY
+          aws --endpoint-url "$R2_ENDPOINT" s3 cp "$RUNNER_TEMP/status.json" "s3://$R2_BUCKET/jobs/$JOB_ID/status.json" --content-type application/json --only-show-errors
+      - name: Remove private input files
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/nxnative-input" "$RUNNER_TEMP/nxnative-keys" "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/file-map.tsv" "$RUNNER_TEMP/nxnative-venv"
