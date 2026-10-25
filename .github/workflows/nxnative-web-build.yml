@@ -45,6 +45,16 @@ jobs:
           test -n "$AWS_SECRET_ACCESS_KEY"
           echo "Runner disk space:"
           df -h /
+      - name: Mark build as running
+        shell: bash
+        run: |
+          set -euo pipefail
+          export R2_ENDPOINT="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+          python3 - "$RUNNER_TEMP/status.json" <<'PY'
+          import json, pathlib, sys, datetime
+          pathlib.Path(sys.argv[1]).write_text(json.dumps({"status":"running","message":"The macOS runner is preparing dependencies and building the IPA.","updatedAt":datetime.datetime.now(datetime.timezone.utc).isoformat()}))
+          PY
+          aws --endpoint-url "$R2_ENDPOINT" s3 cp "$RUNNER_TEMP/status.json" "s3://$R2_BUCKET/jobs/$JOB_ID/status.json" --content-type application/json --only-show-errors
       - uses: actions/checkout@v4
       - name: Install build dependencies
         shell: bash
