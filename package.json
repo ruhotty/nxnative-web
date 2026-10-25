@@ -1,0 +1,9 @@
+{
+  "name": "nxnative-web",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Cloudflare Pages upload interface and secure R2 multipart upload support for NXNative",
+  "dependencies": {
+    "aws4fetch": "^1.0.20"
+  }
+}
