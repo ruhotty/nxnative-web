@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111827">
+  <title>NXNative Web</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <div class="mark">NX</div>
+      <div><p class="eyebrow">NXNATIVE WEB</p><h1>Build your iOS app</h1></div>
+    </header>
+    <p class="intro">Upload game files you own and your own prod.keys. GitHub Actions runs the existing NXNative build script on macOS.</p>
+    <section class="panel">
+      <label for="access">Private access code</label>
+      <div class="access-row"><input id="access" type="password" autocomplete="off" placeholder="Enter your access code"><button id="save-access" class="secondary">Save</button></div>
+      <p class="hint">The code is kept in this browser tab only. Do not share it.</p>
+    </section>
+    <section class="panel">
+      <h2>1. Choose files</h2>
+      <p class="hint">Select one or more NSP, XCI, NSZ or XCZ files and your prod.keys file. Large games may exceed the free macOS runner's available disk space.</p>
+      <label class="drop" for="files"><span class="drop-icon">↑</span><strong>Choose game files and prod.keys</strong><span>Files upload directly to your private Cloudflare R2 bucket.</span></label>
+      <input id="files" type="file" multiple accept=".nsp,.xci,.nsz,.xcz,.keys">
+      <ul id="file-list" class="file-list"><li class="empty">No files selected.</li></ul>
+      <button id="start" class="primary" disabled>Upload and build</button>
+      <p class="hint">Only upload game dumps and keys you are legally allowed to use. Never put prod.keys in GitHub or share them.</p>
+    </section>
+    <section class="panel" id="progress-panel" hidden>
+      <h2 id="status-title">Build status</h2>
+      <div class="progress-track"><div id="progress-bar"></div></div>
+      <p id="status-text" role="status">Waiting to start.</p>
+      <pre id="logs">Build output is shown in GitHub Actions.</pre>
+      <a id="download" class="primary link-button" hidden>Download IPA</a>
+    </section>
+    <footer>NXNative Web is an independent interface for the NXNative project. It is not affiliated with Nintendo.</footer>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>
